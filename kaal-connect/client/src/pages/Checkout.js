@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
 import API from '../api/axios';
@@ -7,8 +7,7 @@ import toast from 'react-hot-toast';
 const IMG_BASE = 'http://localhost:5000';
 
 const PAYMENT_METHODS = [
-  { value: 'card', label: 'Credit / Debit Card', emoji: '💳' },
-  { value: 'upi', label: 'UPI', emoji: '📱' },
+  { value: 'razorpay', label: 'Razorpay (Cards, UPI, Wallets)', emoji: '💳' },
   { value: 'cod', label: 'Cash on Delivery', emoji: '💵' },
 ];
 
@@ -16,11 +15,23 @@ export default function Checkout() {
   const { items, total, fetchCart } = useCart();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState('card');
+  const [paymentMethod, setPaymentMethod] = useState('razorpay');
   const [form, setForm] = useState({
     fullName: '', address: '', city: '', state: '', zip: '', country: 'India', phone: '',
   });
-  const [step, setStep] = useState(1); // 1 = shipping, 2 = payment, 3 = review
+  const [step, setStep] = useState(1);
+  const [orderData, setOrderData] = useState(null);
+
+  // Load Razorpay script
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.async = true;
+    document.body.appendChild(script);
+    return () => {
+      document.body.removeChild(script);
+    };
+  }, []);
 
   const handleFormChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
 
@@ -32,13 +43,91 @@ export default function Checkout() {
     return true;
   };
 
-  const handlePlaceOrder = async () => {
-    if (items.length === 0) { toast.error('Your cart is empty'); return; }
+  const handleRazorpayPayment = async () => {
+    if (items.length === 0) {
+      toast.error('Your cart is empty');
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      // Create Razorpay order
+      const { data } = await API.post('/orders/razorpay/create-order', {
+        shippingAddress: form,
+      });
+
+      setOrderData(data.order);
+
+      const options = {
+        key: 'rzp_test_SW0N3rLraNsj9l', // Your Razorpay Key ID
+        amount: data.order.amount * 100, // Amount in paise
+        currency: 'INR',
+        name: 'KALA Connect',
+        description: `Order for ${form.fullName}`,
+        order_id: data.order.razorpayOrderId,
+        handler: async (response) => {
+          try {
+            // Verify payment
+            const verifyRes = await API.post('/orders/razorpay/verify-payment', {
+              orderId: data.order._id,
+              razorpayOrderId: response.razorpay_order_id,
+              razorpayPaymentId: response.razorpay_payment_id,
+              razorpaySignature: response.razorpay_signature,
+            });
+
+            await fetchCart();
+            toast.success('Payment successful! Order confirmed.');
+            navigate(`/order-success/${verifyRes.data.order._id}`);
+          } catch (err) {
+            toast.error(err.response?.data?.message || 'Payment verification failed');
+          }
+        },
+        prefill: {
+          name: form.fullName,
+          email: localStorage.getItem('userEmail') || '',
+          contact: form.phone,
+        },
+        theme: {
+          color: '#D4AF37',
+        },
+        modal: {
+          ondismiss: async () => {
+            // Handle payment cancellation
+            try {
+              await API.post('/orders/razorpay/payment-failed', {
+                orderId: data.order._id,
+                reason: 'User cancelled payment',
+              });
+              toast.error('Payment cancelled. Order has been cancelled.');
+            } catch (err) {
+              console.error('Error handling payment failure:', err);
+            }
+          },
+        },
+      };
+
+      const razorpay = new window.Razorpay(options);
+      razorpay.open();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to initiate payment');
+      console.error('Payment error:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCODOrder = async () => {
+    if (items.length === 0) {
+      toast.error('Your cart is empty');
+      return;
+    }
+
     try {
       setLoading(true);
       const { data } = await API.post('/orders', {
         shippingAddress: form,
-        paymentMethod,
+        paymentMethod: 'cod',
       });
       await fetchCart();
       toast.success('Order placed successfully!');
@@ -47,6 +136,14 @@ export default function Checkout() {
       toast.error(err.response?.data?.message || 'Failed to place order');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePlaceOrder = async () => {
+    if (paymentMethod === 'razorpay') {
+      await handleRazorpayPayment();
+    } else if (paymentMethod === 'cod') {
+      await handleCODOrder();
     }
   };
 
@@ -113,7 +210,7 @@ export default function Checkout() {
                 </div>
                 <div>
                   <label className="label-dark">Country</label>
-                  <input name="country" value={form.country} onChange={handleFormChange} placeholder="India" className="input-dark" />
+                  <input name="country" value={form.country} disabled className="input-dark opacity-60" />
                 </div>
                 <div className="sm:col-span-2">
                   <label className="label-dark">Phone Number</label>
@@ -142,7 +239,8 @@ export default function Checkout() {
                       <p className={`font-sans text-sm font-medium ${paymentMethod === pm.value ? 'text-gold-300' : 'text-parchment-100'}`}>
                         {pm.label}
                       </p>
-                      {pm.value === 'card' && <p className="text-parchment-300/30 text-xs font-sans mt-0.5">Mock payment — no real charges</p>}
+                      {pm.value === 'razorpay' && <p className="text-parchment-300/30 text-xs font-sans mt-0.5">Secure payment via Razorpay</p>}
+                      {pm.value === 'cod' && <p className="text-parchment-300/30 text-xs font-sans mt-0.5">Pay when order is delivered</p>}
                     </div>
                     <div className={`ml-auto w-4 h-4 rounded-full border-2 flex items-center justify-center ${
                       paymentMethod === pm.value ? 'border-gold-500' : 'border-ink-500'}`}>
@@ -151,24 +249,6 @@ export default function Checkout() {
                   </button>
                 ))}
               </div>
-
-              {/* Mock card inputs */}
-              {paymentMethod === 'card' && (
-                <div className="p-4 bg-ink-700/50 border border-ink-600 space-y-3 mb-4">
-                  <p className="text-parchment-300/40 text-xs font-sans tracking-widest uppercase mb-3">Demo Card Details</p>
-                  <input className="input-dark" placeholder="Card Number: 4242 4242 4242 4242" readOnly value="4242 4242 4242 4242" />
-                  <div className="grid grid-cols-2 gap-3">
-                    <input className="input-dark" placeholder="MM/YY" readOnly value="12/28" />
-                    <input className="input-dark" placeholder="CVV" readOnly value="123" />
-                  </div>
-                </div>
-              )}
-              {paymentMethod === 'upi' && (
-                <div className="p-4 bg-ink-700/50 border border-ink-600 mb-4">
-                  <p className="text-parchment-300/40 text-xs font-sans mb-3">UPI ID (Demo)</p>
-                  <input className="input-dark" placeholder="yourname@upi" readOnly value="demo@KALAconnect" />
-                </div>
-              )}
 
               <div className="flex gap-3">
                 <button onClick={() => setStep(1)} className="btn-outline px-6 py-3">← Back</button>
@@ -188,6 +268,13 @@ export default function Checkout() {
                 <p className="text-parchment-200 font-sans text-sm">{form.fullName}</p>
                 <p className="text-parchment-300/60 font-sans text-sm">{form.address}, {form.city}, {form.state} — {form.zip}</p>
                 <p className="text-parchment-300/60 font-sans text-sm">{form.phone}</p>
+              </div>
+
+              <div className="mb-5">
+                <p className="label-dark mb-2">Payment Method</p>
+                <p className="text-parchment-200 font-sans text-sm">
+                  {PAYMENT_METHODS.find(m => m.value === paymentMethod)?.label}
+                </p>
               </div>
 
               <div className="gold-line mb-5" />
@@ -222,9 +309,9 @@ export default function Checkout() {
                   {loading ? (
                     <span className="flex items-center justify-center gap-2">
                       <span className="w-4 h-4 border-2 border-ink-900/30 border-t-ink-900 rounded-full animate-spin" />
-                      Placing Order...
+                      Processing...
                     </span>
-                  ) : `Place Order — ₹${grandTotal.toLocaleString('en-IN')}`}
+                  ) : `Complete Purchase — ₹${grandTotal.toLocaleString('en-IN')}`}
                 </button>
               </div>
             </div>
@@ -255,7 +342,7 @@ export default function Checkout() {
               <span className="font-display text-gold-400 text-xl font-semibold">₹{grandTotal.toLocaleString('en-IN')}</span>
             </div>
             <div className="mt-4 p-3 bg-ink-700/50 border border-ink-600">
-              <p className="text-parchment-300/40 text-xs font-sans text-center">🔒 Mock checkout — no real payment processed</p>
+              <p className="text-parchment-300/40 text-xs font-sans text-center">🔒 Secure checkout powered by Razorpay</p>
             </div>
           </div>
         </div>

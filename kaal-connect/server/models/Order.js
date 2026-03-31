@@ -13,6 +13,8 @@ const orderSchema = new mongoose.Schema({
   buyerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   items: [orderItemSchema],
   totalAmount: { type: Number, required: true },
+  gst: { type: Number, default: 0 },
+  grandTotal: { type: Number, default: 0 },
   status: { type: String, enum: ['pending','processing','shipped','delivered','cancelled'], default: 'pending' },
   shippingAddress: {
     fullName: { type: String, required: true },
@@ -23,9 +25,10 @@ const orderSchema = new mongoose.Schema({
     country: { type: String, required: true },
     phone: { type: String, required: true },
   },
-  paymentMethod: { type: String, enum: ['card','upi','cod'], default: 'card' },
+  paymentMethod: { type: String, enum: ['card','upi','cod','razorpay'], default: 'card' },
   paymentStatus: { type: String, enum: ['pending','paid','failed'], default: 'pending' },
   paymentId: { type: String, default: '' },
+  razorpayOrderId: { type: String, default: '' },
   notes: { type: String, default: '' },
 }, { timestamps: true });
 
